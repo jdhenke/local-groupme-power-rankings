@@ -15,6 +15,7 @@ import os
 import json
 import time
 from pprint import pprint
+import math
 
 # magic numbers; remove them if possible
 PORT = 8000
@@ -106,16 +107,25 @@ def analyze():
         users[member["id"]] = member["nickname"]
     messages = json.load(open("messages.json"))
     counts = dict()
+    tf = dict() # tf[user_id][term] = count
 
     for message in messages:
         user_id = message["user_id"]
         if user_id in ("system"): continue
         if user_id not in users:
             users[user_id] = message["name"]
+        if user_id not in tf: tf[user_id] = dict()
         total, likes = counts.get(user_id, (0, 0))
         total += 1
         likes += len([1 for uid in message["favorited_by"] if uid != user_id])
         counts[user_id] = (total, likes)
+
+        if message["text"] is not None:
+            for term in message["text"].lower().replace(".","").replace("'","").replace(",","").replace('"', '').replace("-", "").replace("=", "").split(" "):
+                term = term.strip()
+                if len(term) == 0: continue
+                count = tf[user_id].get(term, 0)
+                tf[user_id][term] = count + 1
 
     # get messages vs. likes
     counts_data = []
@@ -129,10 +139,26 @@ def analyze():
         })
     with open("counts.json", "w") as f:
         json.dump(counts_data, f)
-    pprint(counts_data)
+    # pprint(counts_data)
 
-    for score, name in sorted([(1.0 * likes / total, users[uid]) for uid, (total, likes) in counts.iteritems() if total > 10]):
-        print "%.3f" % score, name
+    # for score, name in sorted([(1.0 * likes / total, users[uid]) for uid, (total, likes) in counts.iteritems() if total > 10]):
+    #     print "%.3f" % score, name
+
+    tfidf_data = []
+    for uid, terms in tf.iteritems():
+        if counts[uid][0] < 10: continue
+        scores = []
+        for term, count in terms.iteritems():
+            idf = math.log(1.0 * len(tf) / len([1 for u in tf if term in tf[u]]))
+            scores.append((count * idf, term))
+        top_scores = sorted(scores, reverse=True)[:10]
+        tfidf_data.append({
+            "user_id": uid,
+            "nickname": users[uid],
+            "terms": [{"score": score, "term": term} for score, term in top_scores]
+        })
+    with open("tfidf.json", "w") as f:
+        json.dump(tfidf_data, f)
 
 # serves the UI
 def serve():

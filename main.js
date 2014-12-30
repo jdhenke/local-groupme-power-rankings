@@ -1,6 +1,7 @@
 document.addEventListener("DOMContentLoaded", function() {
     renderInfo();
     renderTotalVsLikes();
+    renderTfidf();
 });
 
 function addAnalysis(title, el) {
@@ -206,5 +207,31 @@ function renderTotalVsLikes() {
 
         addAnalysis("Messages vs. Likes", outputEl);
 
+    });
+
+}
+
+function renderTfidf() {
+    d3.json("tfidf.json", function(err, data) {
+        if (err != null) {
+            throw new Exception(err);
+        }
+        var tfidfEl = document.createElement("div");
+        addAnalysis("TF-IDF", tfidfEl);
+        data.forEach(function(datum) {
+            var personHeader = document.createElement("h3");
+            personHeader.appendChild(document.createTextNode(datum.nickname))
+            tfidfEl.appendChild(personHeader);
+            var scale = d3.scale.linear()
+                .domain(d3.extent(datum.terms, function(x) { return x.score; }))
+                .range([12,30]);
+            console.log(scale.domain());
+            var ol = d3.select(tfidfEl).append("ol");
+            datum.terms.forEach(function(termData) {
+                var text = ol.append('li').append("span")
+                    .style("font-size", scale(termData.score) + "px")
+                    .text(termData.term);
+            });
+        });
     });
 }
