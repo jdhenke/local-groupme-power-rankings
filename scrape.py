@@ -7,8 +7,6 @@
 # no thought has been given to scale or security - this is for fun.
 
 import numpy as np
-import SimpleHTTPServer
-import SocketServer
 import codecs
 import requests
 import os
@@ -18,22 +16,20 @@ from pprint import pprint
 import math
 
 # magic numbers; remove them if possible
-PORT = 8000
-REQUEST_WAIT = 5
+REQUEST_WAIT = 1
+REFRESH_WINDOW = 7 * 60 * 60 * 24 # number of seconds in a week
 
-# environment variablers
+# environment variables
 TOKEN = os.environ["GROUPME_TOKEN"]
 GROUP_ID = os.environ["GROUPME_GROUP_ID"]
-
-# TODO: impl rescraping for more likes
 
 def main():
     scrape()
     analyze()
-    # serve()
 
-# ensures we have all the data from groupme
+# ensures we have all the raw data from groupme
 def scrape():
+
     # get latest group info
     group_url = "https://api.groupme.com/v3/groups/%s" % GROUP_ID
     params = {
@@ -44,41 +40,48 @@ def scrape():
         raise Exception("Weird response in getting group info. %s" % r)
     with codecs.open("group.json", "w", "utf-8") as f:
         json.dump(json.loads(r.text)["response"], f)
-    # get all messages
+
+    # scrape all messages, building off the current cache if it exists and
+    # refreshing recent messages to account for more likes
     messages_url = "https://api.groupme.com/v3/groups/%s/messages" % GROUP_ID
     if os.path.isfile("messages.json"):
         messages = json.load(open("messages.json"))
+        print "Loaded %i messages from cache." % len(messages)
     else:
         messages = []
-    print "Starting at %i messages." % len(messages)
+
     if len(messages) == 0:
+        print "No cached messages found."
+        print "Working backwards to retrieve all messages..."
         start_id = json.load(open("group.json"))["messages"]["last_message_id"]
-    else:
-        start_id = messages[-1]["id"]
+        while True:
+            params = {
+                "before_id": start_id,
+                "limit": 100,
+                "token": TOKEN,
+            }
+            r = requests.get(messages_url, params=params)
+            if r.status_code == 304: break
+            new_ms = json.loads(r.text)["response"]["messages"]
+            messages += new_ms
+            with open('messages.json', 'w') as f:
+                json.dump(messages, f)
+                f.close()
+            start_id = new_ms[-1]["id"]
+            print "\tNow at %i messages." % len(messages)
+            time.sleep(REQUEST_WAIT)
+        print "Done retrieving all messages."
 
     if len(set([m["id"] for m in messages])) != len(messages):
-        raise Exception("Duplicate id detected in present messages.")
+        raise Exception("Duplicate message id detected.")
 
-    # check before data I have
-    while True:
-        params = {
-            "before_id": start_id,
-            "limit": 100,
-            "token": TOKEN,
-        }
-        r = requests.get(messages_url, params=params)
-        if r.status_code == 304: break
-        new_ms = json.loads(r.text)["response"]["messages"]
-        messages += new_ms
-        with open('messages.json', 'w') as f:
-            json.dump(messages, f)
-            f.close()
-        start_id = new_ms[-1]["id"]
-        print "Now at %i messages..." % len(messages)
-        time.sleep(REQUEST_WAIT)
-
-    # check after data I have
-    end_id = messages[0]["id"]
+    i = 0
+    refresh_time = messages[0]["created_at"] - REFRESH_WINDOW
+    while i < len(messages) and messages[i]["created_at"] > refresh_time:
+        i += 1
+    end_id = messages[i]["id"]
+    messages = messages[i:]
+    print "Refreshing last %i messages..." % i
     while True:
         params = {
             "after_id": end_id,
@@ -88,10 +91,9 @@ def scrape():
         r = requests.get(messages_url, params=params)
         new_ms = json.loads(r.text)["response"]["messages"]
         if len(new_ms) == 0: break
-        print "received %i messages" % len(new_ms)
         messages = new_ms[::-1] + messages
         if len(set([m["id"] for m in messages])) != len(messages):
-            raise Exception("Duplicate id detected.")
+            raise Exception("Duplicate message id detected.")
         with open('messages.json', 'w') as f:
             json.dump(messages, f)
             f.close()
@@ -99,15 +101,19 @@ def scrape():
         print "Now at %i messages..." % len(messages)
         time.sleep(REQUEST_WAIT)
 
+    print "Scraping finished with %i messages in cache." % len(messages)
+
 # generates the info necessary for the UI from the raw-data
 def analyze():
+
     group = json.load(open("group.json"))
     users = dict()
     for member in group["members"]:
-        users[member["id"]] = member["nickname"]
+        users[member["user_id"]] = member["nickname"]
     messages = json.load(open("messages.json"))
     counts = dict()
     tf = dict() # tf[user_id][term] = count
+    pairs = dict() # pairs[i][u] = n := i liked ur message n times
 
     for message in messages:
         user_id = message["user_id"]
@@ -118,7 +124,12 @@ def analyze():
         total, likes = counts.get(user_id, (0, 0))
         total += 1
         likes += len([1 for uid in message["favorited_by"] if uid != user_id])
+        for liker_id in message["favorited_by"]:
+            pairs.setdefault(liker_id, dict())
+            pairs[liker_id].setdefault(user_id, 0)
+            pairs[liker_id][user_id] += 1
         counts[user_id] = (total, likes)
+
 
         if message["text"] is not None:
             for term in message["text"].lower().replace(".","").replace("'","").replace(",","").replace('"', '').replace("-", "").replace("=", "").split(" "):
@@ -139,32 +150,28 @@ def analyze():
         })
     with open("counts.json", "w") as f:
         json.dump(counts_data, f)
-    # pprint(counts_data)
 
-    # for score, name in sorted([(1.0 * likes / total, users[uid]) for uid, (total, likes) in counts.iteritems() if total > 10]):
-    #     print "%.3f" % score, name
-
-    tfidf_data = []
-    for uid, terms in tf.iteritems():
-        if counts[uid][0] < 10: continue
-        scores = []
-        for term, count in terms.iteritems():
-            idf = math.log(1.0 * len(tf) / len([1 for u in tf if term in tf[u]]))
-            scores.append((count * idf, term))
-        top_scores = sorted(scores, reverse=True)[:10]
-        tfidf_data.append({
-            "user_id": uid,
-            "nickname": users[uid],
-            "terms": [{"score": score, "term": term} for score, term in top_scores]
+    # calculate power rankings
+    users_list = [u for u in users.keys() if counts[u][0] > 10]
+    n = len(users_list)
+    A = np.zeros((n, n))
+    for i, liker in enumerate(users_list):
+        for j, likee in enumerate(users_list):
+            if i == j: continue
+            if liker in pairs and likee in pairs[liker]:
+                A[i,j] += pairs[liker][likee]
+    M = A/A.sum(axis=0)
+    R = np.linalg.inv(np.eye(n) - M).dot(np.ones(n))
+    R /= sum(R)
+    power_ranking_data = []
+    for i, user_id in enumerate(users_list):
+        power_ranking_data.append({
+            "user_id": user_id,
+            "nickname": users[user_id],
+            "power_ranking": R[i]
         })
-    with open("tfidf.json", "w") as f:
-        json.dump(tfidf_data, f)
-
-# serves the UI
-def serve():
-    Handler = SimpleHTTPServer.SimpleHTTPRequestHandler
-    httpd = SocketServer.TCPServer(("", PORT), Handler)
-    httpd.serve_forever()
+    with open("power_ranking.json", "w") as f:
+        json.dump(power_ranking_data, f)
 
 # kick things off when this script is run
 if __name__ == '__main__':
