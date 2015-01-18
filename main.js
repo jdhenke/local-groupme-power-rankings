@@ -21,6 +21,7 @@ function renderGraphic() {
 
             var lookup = {};
             rankings.forEach(function(ranking) {
+                console.log(ranking.nickname, ranking.user_id);
                 lookup[ranking.user_id] = ranking.power_ranking;
             })
             data.sort(function(a, b) {
@@ -36,12 +37,12 @@ function renderGraphic() {
                 , height = 500 - margin.top - margin.bottom;
 
             var x = d3.scale.linear()
-                .domain([0, d3.max(data, function(d) { return d.total; }) + 30])
+                .domain([0, d3.max(data, function(d) { return d.total; })])
                 .range([ 0, width - 200 ]);
 
             var y = d3.scale.linear()
-                .domain([0, d3.max(data, function(d) { return d.likes; }) + 30])
-                .range([ height, 0 ]);
+                .domain([0, d3.max(data, function(d) { return d.likes; })])
+                .range([ height, 30 ]);
 
             var chart = powerRankings
                 .append('svg:svg')
@@ -86,6 +87,7 @@ function renderGraphic() {
                 .attr("class", "label")
                 .attr("transform", "rotate(-90)")
                 .attr("y", 6)
+                .attr("x", -30)
                 .attr("dy", ".71em")
                 .style("text-anchor", "end")
                 .text("Total Likes");
@@ -145,7 +147,7 @@ function renderGraphic() {
                 .attr("x", width - 125)
                 .attr("y", 15)
                 .style("text-anchor", "end")
-                .text(function(_, i) { return i + "."; })
+                .text(function(_, i) { return (i + 1) + "."; })
 
             legend.append("text")
                 .attr("x", width - 118)
