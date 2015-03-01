@@ -106,9 +106,15 @@ def analyze(group, messages):
 
     # filter to see if should include in analysis. math fails if a col of all 0s
     # exist, which is to say a person never liked any messages.
-    def include(u):
+    #
+    # TODO: optimize - the assume_included scheme is a hack for when a user has
+    # some likes for users who themselves will not be included, thus resulting
+    # in a column of zeros and bad times with the math.
+    def include(u, assume_included=set()):
+        if u in assume_included: return True
         ur_likes = pairs.get(u, dict()).iteritems()
-        return sum([likes for (likee, likes) in ur_likes if likee != u]) > 0
+        new_assume_included = assume_included.union({u})
+        return sum([likes for (likee, likes) in ur_likes if likee != u and include(likee, new_assume_included)]) > 0
 
     # store messages vs. likes data
     counts_data = []
